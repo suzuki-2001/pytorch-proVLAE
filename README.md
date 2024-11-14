@@ -21,7 +21,7 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 </tr>
 </table>
 
-⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress..
+⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress.
 
 &nbsp;
 
@@ -70,6 +70,7 @@ python train.py \
         --output_dir ./output/shapes3d/
 
 # training with distributed data parallel
+# tested NVIDIA V100 16GB+32GB, NVIDIA A6000 48GBx2
 torchrun --nproc_per_node=2 train_ddp.py \
     --distributed True \
     --mode seq_train \
@@ -176,5 +177,5 @@ This repository is licensed under the MIT License - see the [LICENSE](./LICENSE)
 ***
 *This repository is a contribution to [AIST (National Institute of Advanced Industrial Science and Technology)](https://www.aist.go.jp/) project.
 
-[Human Informatics and Interaction Research Institute](https://unit.aist.go.jp/hiiri/), [Neuronrehabilitation Research Group](https://unit.aist.go.jp/hiiri/nrehrg/), \
+[Human Informatics and Interaction Research Institute](https://unit.aist.go.jp/hiiri/), [Neuronrehabilitation Research Group](https://unit.aist.go.jp/hiiri/nrehrg/) \
 Shosuke Suzuki, Ryusuke Hayashi
