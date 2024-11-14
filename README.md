@@ -120,7 +120,7 @@ Mode descriptions:
 
 &nbsp;
 
-## Pytorch Optimization
+## PyTorch optimization options
 
 - __Fast training__: performance tuning referred to in [PyTorch Performance Tuning Guide - Szymon Migacz, NVIDIA](https://t.co/7CIDWfrI0J).
     - [torch.backends.cudnn.benchmark](https://pytorch.org/docs/stable/backends.html#torch.backends.cudnn.benchmark)
@@ -143,7 +143,7 @@ Mode descriptions:
 &nbsp;
 
 ## Dataset
-We provided various datasets used in the original pro-VLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
+We provided various datasets used in the original proVLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
 
 ### Datasets used in the original pro-VLAE paper
 1. [MNIST](https://yann.lecun.com/exdb/mnist/): `mnist`
