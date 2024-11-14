@@ -38,7 +38,7 @@ This implementation introduces dynamic size management for arbitrary input image
 &nbsp;
 
 ## Installation
-We recommend using [mamba](https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html)(via [miniforge](https://github.com/conda-forge/miniforge)) for faster installation of dependencies, but you can also use [conda](https://docs.anaconda.com/miniconda/miniconda-install/).
+We recommend using [mamba](https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html) (via [miniforge](https://github.com/conda-forge/miniforge)) for faster installation of dependencies, but you can also use [conda](https://docs.anaconda.com/miniconda/miniconda-install/).
 ```bash
 mamba env create -f env.yaml # or conda
 mamba activate torch-provlae
