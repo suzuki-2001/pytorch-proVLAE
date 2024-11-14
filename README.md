@@ -143,9 +143,9 @@ Mode descriptions:
 &nbsp;
 
 ## Dataset
-We provided various datasets used in the original proVLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
+Here are the lists of datasets used in the original proVLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
 
-### Datasets used in the original pro-VLAE paper
+### Datasets used in the original proVLAE paper
 1. [MNIST](https://yann.lecun.com/exdb/mnist/): `mnist`
 2. [Disentanglement testing Sprites dataset (dSprites)](https://github.com/google-deepmind/dsprites-dataset): `dsprites`
 3. [3D Shapes](https://github.com/google-deepmind/3d-shapes): `shapes3d`
@@ -155,7 +155,7 @@ We provided various datasets used in the original proVLAE paper and additional d
 1. [MPI3D Disentanglement Datasets](https://github.com/rr-learning/disentanglement_dataset?tab=readme-ov-file): `mpi3d`
 2. [3DIdent](https://paperswithcode.com/dataset/3dident): `ident3d`
 
-### Other Datasets (experimental)
+### Other Datasets (testing in progress)
 1. [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist): `fashionmnist`
 2. [Describable Textures Dataset (DTD)](https://www.robots.ox.ac.uk/~vgg/data/dtd/): `dtd`
 3. [102 Category Flower Dataset](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/): `flowers102`
