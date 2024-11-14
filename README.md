@@ -143,7 +143,7 @@ Mode descriptions:
 &nbsp;
 
 ## Dataset
-Here are the lists of datasets used in the original proVLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
+Here is a lists of datasets used in the original proVLAE paper, along with additional disentanglement datasets. The datasets are automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except for ImageNet. 
 
 ### Datasets used in the original proVLAE paper
 1. [MNIST](https://yann.lecun.com/exdb/mnist/): `mnist`
