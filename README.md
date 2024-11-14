@@ -33,7 +33,7 @@ This implementation introduces dynamic size management for arbitrary input image
 > Figure 1: Progressive learning of hierarchical representations. White blocks and solid lines are VAE
 > models at the current progression. α is a fade-in coefficient for blending in the new network component. Gray circles and dash line represents (optional) constraining of the future latent variables.
 
-⬆︎ ladder and progressive learning of hierarchical representations.
+⬆︎ The figure from Zhiyuan et al. (ICLR 2020) illustrates the ladder architecture of the VAE and the progressive learning of hierarchical representations.
 
 &nbsp;
 
