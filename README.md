@@ -1,4 +1,4 @@
-# pytorch pro-VLAE
+# pytorch-proVLAE
 ![MIT LICENSE](https://img.shields.io/badge/LICENSE-MIT-blue)
 [![Format Code](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml)
 [![Validate Mamba Environment](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml)
@@ -21,7 +21,7 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 </tr>
 </table>
 
-⬆︎ Visualization of results when traversing the latent space of proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress..
+⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress..
 
 &nbsp;
 
@@ -47,8 +47,8 @@ mamba activate torch-provlae
 &nbsp;
 
 ## Usage
-You can train pytorch pro-VLAE with the following command. Sample hyperparameters and train configuration are provided in [scripts directory](./scripts/).
-If a checkpoint is available, setting the mode argument to "visualize" allows you to only inspect the latent traversal, Please keep the parameter settings the same as checkpoint.
+You can train pytorch-proVLAE with the following command. Sample hyperparameters and train configuration are provided in [scripts directory](./scripts/).
+If you have a checkpoint file from a pythorch-proVLAE training, setting the mode argument to "visualize" allows you to inspect the latent traversal. Please ensure that the parameter settings match those used for the checkpoint file when running this mode.
 
 </br>
 
