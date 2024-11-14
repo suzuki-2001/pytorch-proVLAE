@@ -25,7 +25,8 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 
 &nbsp;
 
-This implementation enables flexible configuration of VAE architecture by introducing dynamic size management for arbitrary input image sizes, automatic calculation of maximum possible ladder layers based on input dimensions, and adaptive handling of latent space dimensionality. The model automatically adjusts its network depth and feature map sizes by calculating appropriate intermediate dimensions, while ensuring minimum feature map size and proper dimension handling in flatten/unflatten operations. These adaptations allow users to freely specify z_dim, number of ladder layers, and input image size.
+We modified the code to allow more flexible configuration of VAE architecture by specifying only z_dim, number of ladder layers, and input image size.
+This implementation introduces dynamic size management for arbitrary input image sizes; it automatically calculates the maximum possible ladder layers based on input dimensions and adaptively handles latent space dimensionality. The network depth and feature map sizes are also adjusted automatically by calculating appropriate intermediate dimensions, while ensuring a minimum feature map size and proper handling of dimensions during flatten/unflatten operations.
 
 ![figure-1 in pro-vlae paper](./md/provlae-figure1.png)
 
