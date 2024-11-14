@@ -21,7 +21,7 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 </tr>
 </table>
 
-⬆︎ Traverse the latent space of proVLAE using four datasets: 3D Shapes (top-left), MNIST (top-right), and preliminary experimental results from 3DIdent (bottom-left) and MPI3D (bottom-right), where hyperparameter tuning is still in progress.
+⬆︎ Visualization of results when traversing the latent space of proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress..
 
 &nbsp;
 
