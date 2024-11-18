@@ -40,6 +40,9 @@ This implementation introduces dynamic size management for arbitrary input image
 ## Installation
 We recommend using [mamba](https://mamba.readthedocs.io/en/latest/installation/mamba-installation.html) (via [miniforge](https://github.com/conda-forge/miniforge)) for faster installation of dependencies, but you can also use [conda](https://docs.anaconda.com/miniconda/miniconda-install/).
 ```bash
+git clone https://github.com/suzuki-2001/pytorch-proVLAE.git
+cd pytorch-proVLAE
+
 mamba env create -f env.yaml # or conda
 mamba activate torch-provlae
 ```
@@ -48,51 +51,38 @@ mamba activate torch-provlae
 
 ## Usage
 You can train pytorch-proVLAE with the following command. Sample hyperparameters and train configuration are provided in [scripts directory](./scripts/).
-If you have a checkpoint file from a pythorch-proVLAE training, setting the mode argument to "visualize" allows you to inspect the latent traversal. Please ensure that the parameter settings match those used for the checkpoint file when running this mode.
+If you have a checkpoint file from a pythorch-proVLAE training, setting the mode argument to "traverse" allows you to inspect the latent traversal. Please ensure that the parameter settings match those used for the checkpoint file when running this mode.
 
 </br>
 
 ```bash
-# all progressive training steps
-python train.py \
-        --dataset shapes3d \
-        --mode seq_train \
-        --batch_size 100 \
-        --num_epochs 15 \
-        --learning_rate 5e-4 \
-        --beta 15 \
-        --z_dim 3 \
-        --hidden_dim 64 \
-        --fade_in_duration 5000 \
-        --optim adamw \
-        --image_size 64 \
-        --chn_num 3 \
-        --output_dir ./output/shapes3d/
-
 # training with distributed data parallel
-torchrun --nproc_per_node=2 train_ddp.py \
-    --distributed True \
+# we tested NVIDIA V100 PCIE 16GB+32GB, NVIDIA A6000 48GB x2
+torchrun --nproc_per_node=2 --master_port=29501 src/train.py \
+    --distributed \
     --mode seq_train \
-    --dataset ident3d \
+    --dataset shapes3d \
+    --optim adamw \
     --num_ladders 3 \
     --batch_size 128 \
-    --num_epochs 30 \
+    --num_epochs 15 \
     --learning_rate 5e-4 \
-    --beta 1 \
+    --beta 8 \
     --z_dim 3 \
     --coff 0.5 \
-    --hidden_dim 64 \
+    --pre_kl \
+    --hidden_dim 32 \
     --fade_in_duration 5000 \
-    --output_dir ./output/ident3d/ \
-    --optim adamw
+    --output_dir ./output/shapes3d/ \
+    --data_path ./data/shapes3d/ 
 ```
 
 </br>
 
+- ### Hyper Parameters
+
 | Argument | Default | Description |
 |----------|---------------|-------------|
-| `dataset` | "shapes3d" | Dataset to use (mnist, fashionmnist, dsprites, shapes3d, mpi3d, ident3d,celeba, flowers102, dtd, imagenet) |
-| `data_path` | "./data" | Path to dataset storage |
 | `z_dim` | 3 | Dimension of latent variables |
 | `num_ladders` | 3 | Number of ladders (hierarchies) in pro-VLAE |
 | `beta` | 8.0 | β parameter for pro-VLAE |
@@ -103,20 +93,35 @@ torchrun --nproc_per_node=2 train_ddp.py \
 | `train_seq` | 1 | Current training sequence number (`indep_train mode` only) |
 | `batch_size` | 100 | Batch size |
 | `num_epochs` | 1 | Number of epochs |
-| `mode` | "seq_train" | Execution mode ("seq_train", "indep_train", "visualize") |
 | `hidden_dim` | 32 | Hidden layer dimension |
 | `coff` | 0.5 | Coefficient for KL divergence |
+| `pre_kl` | True | use inactive ladder loss |
+
+</br>
+
+- ### Training Parameters
+
+| Argument | Default | Description |
+|----------|---------------|-------------|
+| `dataset` | "shapes3d" | Dataset to use (mnist, fashionmnist, dsprites, shapes3d, mpi3d, ident3d,celeba, flowers102, dtd, imagenet) |
+| `data_path` | "./data" | Path to dataset storage |
 | `output_dir` | "outputs" | Output directory |
+| `checkpoint_dir` | "checkpoints" | Checkpooints results directory |
+| `recon_dir` | "reconstructions" | Reconstructions results directory |
+| `traverse_dir` | "travesals" | Traversal results directory |
+| `mode` | "seq_train" | Execution mode ("seq_train", "indep_train", "traverse") |
 | `compile_mode` | "default" | PyTorch compilation mode |
 | `on_cudnn_benchmark` | True | Enable/disable cuDNN benchmark |
 | `optim` | "adam" | Optimization algorithm (adam, adamw, sgd, lamb, diffgrad, madgrad) |
+| `distributed` | False | enable distributed data parallel |
+| `num_workers` | 4 | Number of workers for data loader |
 
 </br>
 
 Mode descriptions:
 - `seq_train`: Sequential training from ladder 1 to `num_ladders`
 - `indep_train`: Independent training of specified `train_seq` ladder
-- `visualize`: Visualize latent space using trained model (need checkpoints)
+- `traverse`: Visualize latent space using trained model (need checkpoints)
 
 &nbsp;
 

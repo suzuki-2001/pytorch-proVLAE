@@ -1,8 +1,6 @@
 import argparse
-import datetime
 import os
 import sys
-import time
 from dataclasses import dataclass, field
 
 import imageio.v3 as imageio
@@ -20,13 +18,23 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from dataset import DTD, MNIST, MPI3D, CelebA, DSprites, FashionMNIST, Flowers102, Ident3D, ImageNet, Shapes3D
-from models import ProVLAE
+from provlae import ProVLAE
+from ddp_utils import setup_logger, setup_distributed, cleanup_distributed
+from utils import exec_time, add_dataclass_args
+
+
+@dataclass
+class OptimizerParameters:
+    betas: tuple = field(default=(0.9, 0.999))
+    eps: float = field(default=1e-08)
+    weight_decay: float = field(default=0)
+
+    momentum: float = field(default=0)  # sgd, madgrad
+    dampening: float = field(default=0)  # sgd
 
 
 @dataclass
 class HyperParameters:
-    dataset: str = field(default="shapes3d")
-    data_path: str = field(default="./data")
     z_dim: int = field(default=3)
     num_ladders: int = field(default=3)
     beta: float = field(default=8.0)
@@ -34,122 +42,47 @@ class HyperParameters:
     fade_in_duration: int = field(default=5000)
     image_size: int = field(default=64)
     chn_num: int = field(default=3)
-    train_seq: int = field(default=1)
     batch_size: int = field(default=100)
     num_epochs: int = field(default=1)
     mode: str = field(default="seq_train")
+    train_seq: int = field(default=1)  # progress stage
     hidden_dim: int = field(default=32)
     coff: float = field(default=0.5)
-    output_dir: str = field(default="outputs")
+    pre_kl: bool = field(default=True)
 
-    # pytorch optimization
+
+@dataclass
+class TrainingParameters:
+    dataset: str = field(default="shapes3d")
+    data_path: str = field(default="./data")
+    num_workers: int = field(default=4)  # data loader
+
+    # output dirs
+    output_dir: str = field(default="output")  # results dir
+    checkpoint_dir: str = field(default="checkpoints")
+    recon_dir: str = field(default="reconstructions")
+    traverse_dir: str = field(default="traversals")
+
+    # PyTorch optimization
     compile_mode: str = field(default="default")  # or max-autotune-no-cudagraphs
     on_cudnn_benchmark: bool = field(default=True)
     optim: str = field(default="adam")
 
-    # distributed training parameters
+    # Distributed training parameters
     distributed: bool = field(default=False)
     local_rank: int = field(default=-1)
     world_size: int = field(default=1)
     dist_backend: str = field(default="nccl")
     dist_url: str = field(default="env://")
 
-    @property
-    def checkpoint_path(self):
-        return os.path.join(self.output_dir, f"checkpoints/model_seq{self.train_seq}.pt")
 
-    @property
-    def recon_path(self):
-        return os.path.join(self.output_dir, f"reconstructions/recon_seq{self.train_seq}.png")
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    add_dataclass_args(parser, HyperParameters)
+    add_dataclass_args(parser, OptimizerParameters)
+    add_dataclass_args(parser, TrainingParameters)
 
-    @property
-    def traverse_path(self):
-        return os.path.join(self.output_dir, f"traversals/traverse_seq{self.train_seq}.gif")
-
-    @classmethod
-    def from_args(cls):
-        parser = argparse.ArgumentParser()
-        for field_info in cls.__dataclass_fields__.values():
-            parser.add_argument(f"--{field_info.name}", type=field_info.type, default=field_info.default)
-        return cls(**vars(parser.parse_args()))
-
-
-def setup_logger(rank=-1, world_size=1):
-    """Setup logger for distributed training"""
-    config = {
-        "handlers": [
-            {
-                "sink": sys.stdout,
-                "format": (
-                    "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
-                    "<level>{level: <8}</level> | "
-                    "<cyan>Rank {extra[rank]}/{extra[world_size]}</cyan> | "
-                    "<cyan>{name}</cyan>:<cyan>{line}</cyan> | "
-                    "<level>{message}</level>"
-                ),
-                "level": "DEBUG",
-                "colorize": True,
-            }
-        ]
-    }
-
-    try:  # Remove all existing handlers
-        logger.configure(**config)
-    except ValueError:
-        pass
-
-    # Create a new logger instance with rank information
-    return logger.bind(rank=rank, world_size=world_size)
-
-
-def setup_distributed(params):
-    """Initialize distributed training environment with explicit device mapping"""
-    if not params.distributed:
-        return False
-
-    try:
-        if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
-            params.rank = int(os.environ["RANK"])
-            params.world_size = int(os.environ["WORLD_SIZE"])
-            params.local_rank = int(os.environ["LOCAL_RANK"])
-        elif "SLURM_PROCID" in os.environ:
-            params.rank = int(os.environ["SLURM_PROCID"])
-            params.local_rank = params.rank % torch.cuda.device_count()
-            params.world_size = int(os.environ["SLURM_NTASKS"])
-        else:
-            raise ValueError("Not running with distributed environment variables set")
-
-        torch.cuda.set_device(params.local_rank)
-        init_method = "env://"
-        backend = params.dist_backend
-        if backend == "nccl" and not torch.cuda.is_available():
-            backend = "gloo"
-
-        if not dist.is_initialized():
-            dist.init_process_group(
-                backend=backend,
-                init_method=init_method,
-                world_size=params.world_size,
-                rank=params.rank,
-            )
-            torch.cuda.set_device(params.local_rank)
-            dist.barrier(device_ids=[params.local_rank])
-
-        return True
-    except Exception as e:
-        print(f"Failed to initialize distributed training: {e}")
-        return False
-
-
-def cleanup_distributed():
-    """Clean up distributed training resources safely with device mapping"""
-    if dist.is_initialized():
-        try:
-            local_rank = int(os.environ.get("LOCAL_RANK", 0))
-            dist.barrier(device_ids=[local_rank])
-            dist.destroy_process_group()
-        except Exception as e:
-            print(f"Error during distributed cleanup: {e}")
+    return parser.parse_args()
 
 
 def get_dataset(params, logger):
@@ -197,7 +130,7 @@ def get_dataset(params, logger):
                 train_loader.dataset,
                 batch_size=params.batch_size,
                 sampler=train_sampler,
-                num_workers=4,
+                num_workers=params.num_workers,
                 pin_memory=True,
                 drop_last=True,
                 persistent_workers=True,
@@ -213,31 +146,6 @@ def get_dataset(params, logger):
     except Exception as e:
         logger.error(f"Failed to load dataset: {str(e)}")
         raise
-
-
-def exec_time(func):
-    """Decorates a function to measure its execution time in hours and minutes."""
-
-    def wrapper(*args, **kwargs):
-        start_time = time.time()
-        result = func(*args, **kwargs)
-        end_time = time.time()
-        execution_time = end_time - start_time
-
-        logger = kwargs.get("logger")  # Get logger from kwargs
-        if not logger:  # Find logger in positional arguments
-            for arg in args:
-                if isinstance(arg, type(setup_logger())):
-                    logger = arg
-                    break
-
-        if logger:
-            logger.success(
-                f"Training completed ({int(execution_time // 3600)}h {int((execution_time % 3600) // 60)}min)"
-            )
-        return result
-
-    return wrapper
 
 
 def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, logger):
@@ -302,15 +210,13 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
 
     model.fade_in = 1.0
     with torch.no_grad():
-        # Get a single batch of images
-        inputs, _ = next(iter(data_loader))
+        inputs, _ = next(iter(data_loader))  # Get a single batch of images
         inputs = inputs[0:1].to(device)
 
         # Get latent representations
         with torch.amp.autocast(device_type="cuda", enabled=False):
             latent_vars = [z[0] for z in model.inference(inputs)]
 
-        # Traverse values
         traverse_range = torch.linspace(-1.5, 1.5, 15).to(device)
 
         # Image layout parameters
@@ -423,7 +329,7 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
     model.train()
     global_step = 0
 
-    logger.info("Start training.")
+    logger.info(f"Start training [progress {params.train_seq}]")
     for epoch in range(params.num_epochs):
         if params.distributed:
             data_loader.sampler.set_epoch(epoch)
@@ -459,13 +365,20 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 global_step += 1
 
         # Save checkpoints and visualizations only on main process
+        checkpoint_path = os.path.join(params.output_dir, params.checkpoint_dir, f"model_seq{params.train_seq}.pt")
         if params.local_rank == 0 or not params.distributed:
-            os.makedirs(os.path.dirname(params.checkpoint_path), exist_ok=True)
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
 
             model.eval()
             with torch.no_grad(), torch.amp.autocast("cuda", dtype=autocast_dtype):
-                save_reconstruction(inputs, x_recon, params.recon_path)
-                create_latent_traversal(model, data_loader, params.traverse_path, device, params)
+                recon_path = os.path.join(params.output_dir, params.recon_dir, f"recon_seq{params.train_seq}.png")
+                traverse_path = os.path.join(
+                    params.output_dir, params.traverse_dir, f"traverse_seq{params.train_seq}.gif"
+                )
+
+                save_reconstruction(inputs, x_recon, recon_path)
+                create_latent_traversal(model, data_loader, traverse_path, device, params)
+
             model.train()
 
             checkpoint = {
@@ -475,7 +388,7 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 "scaler_state_dict": scaler.state_dict() if scaler is not None else None,
                 "loss": loss.item(),
             }
-            torch.save(checkpoint, params.checkpoint_path)
+            torch.save(checkpoint, checkpoint_path)
 
             if (epoch + 1) % 5 == 0:
                 logger.info(f"Epoch: [{epoch+1}/{params.num_epochs}], Loss: {loss.item():.2f}")
@@ -483,26 +396,58 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
 
 def get_optimizer(model, params):
     """Get the optimizer based on the parameter settings"""
-    optimizers = {
-        "adam": optim.Adam,
-        "adamw": optim.AdamW,
-        "sgd": optim.SGD,
-        "lamb": jettify_optim.Lamb,
-        "diffgrad": jettify_optim.DiffGrad,
-        "madgrad": jettify_optim.MADGRAD,
+    optimizer_params = {
+        "params": model.parameters(),
+        "lr": params.learning_rate,
     }
 
-    optimizer = optimizers.get(params.optim.lower())
+    # Adam, Lamb, DiffGrad
+    extra_args_common = {
+        "betas": getattr(params, "betas", (0.9, 0.999)),
+        "eps": getattr(params, "eps", 1e-8),
+        "weight_decay": getattr(params, "weight_decay", 0),
+    }
 
-    if optimizer is None:
-        optimizer = optimizers.get("adam")
-        logger.warning(f"unsupported optimizer {params.optim}, use Adam optimizer.")
+    extra_args_adamw = {
+        "betas": getattr(params, "betas", (0.9, 0.999)),
+        "eps": getattr(params, "eps", 1e-8),
+        "weight_decay": getattr(params, "weight_decay", 0.01),
+    }
 
-    return optimizer(model.parameters(), lr=params.learning_rate)
+    # SGD
+    extra_args_sgd = {
+        "momentum": getattr(params, "momentum", 0),
+        "dampening": getattr(params, "dampening", 0),
+        "weight_decay": getattr(params, "weight_decay", 0),
+        "nesterov": getattr(params, "nesterov", False),
+    }
+
+    # MADGRAD
+    extra_args_madgrad = {
+        "momentum": getattr(params, "momentum", 0.9),
+        "weight_decay": getattr(params, "weight_decay", 0),
+        "eps": getattr(params, "eps", 1e-6),
+    }
+
+    optimizers = {
+        "adam": (optim.Adam, extra_args_common),
+        "adamw": (optim.AdamW, extra_args_adamw),
+        "sgd": (optim.SGD, extra_args_sgd),
+        "lamb": (jettify_optim.Lamb, extra_args_common),
+        "diffgrad": (jettify_optim.DiffGrad, extra_args_common),
+        "madgrad": (jettify_optim.MADGRAD, extra_args_madgrad),
+    }
+
+    optimizer_cls, extra_args = optimizers.get(params.optim.lower(), (optim.Adam, extra_args_common))
+    if params.optim.lower() not in optimizers:
+        logger.warning(f"Unsupported optimizer '{params.optim}', using 'Adam' optimizer instead.")
+    optimizer = optimizer_cls(**optimizer_params, **extra_args)
+
+    return optimizer
 
 
 def main():
-    params = HyperParameters.from_args()
+    params = parse_arguments()
 
     try:
         # Setup distributed training
@@ -514,7 +459,6 @@ def main():
         device = torch.device(f"cuda:{params.local_rank}" if is_distributed else "cuda")
         logger = setup_logger(rank, world_size)
 
-        # GPU config
         torch.set_float32_matmul_precision("high")
         if params.on_cudnn_benchmark:
             torch.backends.cudnn.benchmark = True
@@ -554,6 +498,7 @@ def main():
             num_ladders=params.num_ladders,
             hidden_dim=params.hidden_dim,
             coff=params.coff,
+            pre_kl=params.pre_kl,
         ).to(device)
 
         if is_distributed:
@@ -570,12 +515,13 @@ def main():
         optimizer = get_optimizer(model, params)
         if not is_distributed:
             model = torch.compile(model, mode=params.compile_mode)
+            logger.debug("model compiled")
 
         # Training mode selection
         if params.mode == "seq_train":
             if rank == 0:
                 logger.opt(colors=True).info(
-                    f"<blue>✓ Mode: sequential execution [progress 1 >> {params.num_ladders}]</blue>"
+                    f"<blue>✅ Mode: sequential execution [progress 1 >> {params.num_ladders}]</blue>"
                 )
 
             for i in range(1, params.num_ladders + 1):
@@ -593,7 +539,9 @@ def main():
 
                 # Load checkpoint if needed
                 if params.train_seq >= 2:
-                    prev_checkpoint = os.path.join(params.output_dir, f"checkpoints/model_seq{params.train_seq-1}.pt")
+                    prev_checkpoint = os.path.join(
+                        params.output_dir, params.checkpoint_dir, f"model_seq{params.train_seq-1}.pt"
+                    )
                     if os.path.exists(prev_checkpoint):
                         model, optimizer, scaler = load_checkpoint(
                             model=model,
@@ -625,9 +573,10 @@ def main():
                     dist.barrier()
 
         elif params.mode == "indep_train":
+            logger.info(f"Current trainig progress >> {params.train_seq}")
             if rank == 0:
                 logger.opt(colors=True).info(
-                    f"<blue>✓ Mode: independent execution [progress {params.train_seq}]</blue>"
+                    f"<blue>✅ Mode: independent execution [progress {params.train_seq}]</blue>"
                 )
 
             if is_distributed:
@@ -636,7 +585,9 @@ def main():
 
             # Load checkpoint if needed
             if params.train_seq >= 2:
-                prev_checkpoint = os.path.join(params.output_dir, f"checkpoints/model_seq{params.train_seq-1}.pt")
+                prev_checkpoint = os.path.join(
+                    params.output_dir, params.checkpoint_dir, f"model_seq{params.train_seq-1}.pt"
+                )
                 if os.path.exists(prev_checkpoint):
                     model, optimizer, scaler = load_checkpoint(
                         model=model,
@@ -667,21 +618,46 @@ def main():
                 torch.cuda.synchronize()
                 dist.barrier()
 
+        elif params.mode == "traverse":
+            logger.opt(colors=True).info(f"<blue>✅ Mode: traverse execution [progress 1 {params.num_ladders}]</blue>")
+            try:
+                model, optimizer, scaler = load_checkpoint(
+                    model=model,
+                    optimizer=optimizer,
+                    scaler=scaler,
+                    checkpoint_path=os.path.join(
+                        params.output_dir, params.checkpoint_dir, f"model_seq{params.train_seq}.pt"
+                    ),
+                    device=device,
+                    logger=logger,
+                )
+            except Exception as e:
+                logger.error(f"Load checkpoint failed: {str(e)}")
+
+            traverse_path = os.path.join(params.output_dir, params.traverse_dir, f"traverse_seq{params.train_seq}.gif")
+            create_latent_traversal(model, test_loader, traverse_path, device, params)
+            logger.success("Traverse compelted")
         else:
             logger.error(f"Unsupported mode: {params.mode}, use 'seq_train' or 'indep_train'")
             return
 
+    except KeyboardInterrupt as e:
+        logger.opt(colors=True).error("<red>Keyboard interupt</red>")
+
     except Exception as e:
-        logger.error(f"Training failed: {str(e)}")
-        raise
+        logger.opt(colors=True).exception(f"<red>Training failed: {str(e)}</red>")
+
     finally:
-        try:
-            if is_distributed:
-                torch.cuda.synchronize()
-                cleanup_distributed()
-                logger.info("Distributed resources cleaned up successfully")
-        except Exception as e:
-            logger.error(f"Error during cleanup: {e}")
+        if not is_distributed:
+            logger.info("no resources clean up (is_distributed=False)")
+        else:
+            try:
+                if is_distributed:
+                    torch.cuda.synchronize()
+                    cleanup_distributed()
+                    logger.info("Distributed resources cleaned up successfully")
+            except Exception as e:
+                logger.opt(colors=True).exception(f"<red>Error during cleanup</red>: {e}")
 
 
 if __name__ == "__main__":
