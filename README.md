@@ -21,7 +21,7 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 </tr>
 </table>
 
-⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress..
+⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes (top-left), MNIST (top-right), 3DIdent (bottom-left), and MPI3D (bottom-right). The results for the last two datasets are preliminary, with hyperparameter tuning still in progress.
 
 &nbsp;
 
@@ -125,7 +125,7 @@ Mode descriptions:
 
 &nbsp;
 
-## Pytorch Optimization
+## PyTorch optimization options
 
 - __Fast training__: performance tuning referred to in [PyTorch Performance Tuning Guide - Szymon Migacz, NVIDIA](https://t.co/7CIDWfrI0J).
     - [torch.backends.cudnn.benchmark](https://pytorch.org/docs/stable/backends.html#torch.backends.cudnn.benchmark)
@@ -148,9 +148,9 @@ Mode descriptions:
 &nbsp;
 
 ## Dataset
-We provided various datasets used in the original pro-VLAE paper and additional disentanglement datasets. The dataset is automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except imagenet. 
+Here is a lists of datasets used in the original proVLAE paper, along with additional disentanglement datasets. The datasets are automatically downloaded and preprocessed when you specify the dataset name in the `--dataset` argument except for ImageNet. 
 
-### Datasets used in the original pro-VLAE paper
+### Datasets used in the original proVLAE paper
 1. [MNIST](https://yann.lecun.com/exdb/mnist/): `mnist`
 2. [Disentanglement testing Sprites dataset (dSprites)](https://github.com/google-deepmind/dsprites-dataset): `dsprites`
 3. [3D Shapes](https://github.com/google-deepmind/3d-shapes): `shapes3d`
@@ -160,7 +160,7 @@ We provided various datasets used in the original pro-VLAE paper and additional 
 1. [MPI3D Disentanglement Datasets](https://github.com/rr-learning/disentanglement_dataset?tab=readme-ov-file): `mpi3d`
 2. [3DIdent](https://paperswithcode.com/dataset/3dident): `ident3d`
 
-### Other Datasets (experimental)
+### Other Datasets (testing in progress)
 1. [Fashion-MNIST](https://github.com/zalandoresearch/fashion-mnist): `fashionmnist`
 2. [Describable Textures Dataset (DTD)](https://www.robots.ox.ac.uk/~vgg/data/dtd/): `dtd`
 3. [102 Category Flower Dataset](https://www.robots.ox.ac.uk/~vgg/data/flowers/102/): `flowers102`
@@ -181,5 +181,5 @@ This repository is licensed under the MIT License - see the [LICENSE](./LICENSE)
 ***
 *This repository is a contribution to [AIST (National Institute of Advanced Industrial Science and Technology)](https://www.aist.go.jp/) project.
 
-[Human Informatics and Interaction Research Institute](https://unit.aist.go.jp/hiiri/), [Neuronrehabilitation Research Group](https://unit.aist.go.jp/hiiri/nrehrg/), \
+[Human Informatics and Interaction Research Institute](https://unit.aist.go.jp/hiiri/), [Neuronrehabilitation Research Group](https://unit.aist.go.jp/hiiri/nrehrg/) \
 Shosuke Suzuki, Ryusuke Hayashi
