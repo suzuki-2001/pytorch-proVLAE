@@ -18,9 +18,9 @@ from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 from dataset import DTD, MNIST, MPI3D, CelebA, DSprites, FashionMNIST, Flowers102, Ident3D, ImageNet, Shapes3D
+from ddp_utils import cleanup_distributed, setup_distributed, setup_logger
 from provlae import ProVLAE
-from ddp_utils import setup_logger, setup_distributed, cleanup_distributed
-from utils import exec_time, add_dataclass_args
+from utils import add_dataclass_args, exec_time
 
 
 @dataclass

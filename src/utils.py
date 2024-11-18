@@ -1,5 +1,5 @@
-import time
 import argparse
+import time
 from typing import Any
 
 from ddp_utils import setup_logger
