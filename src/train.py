@@ -3,6 +3,7 @@ import os
 import sys
 from dataclasses import dataclass, field
 
+import wandb
 import imageio.v3 as imageio
 import numpy as np
 import torch
@@ -62,6 +63,7 @@ class TrainingParameters:
     checkpoint_dir: str = field(default="checkpoints")
     recon_dir: str = field(default="reconstructions")
     traverse_dir: str = field(default="traversals")
+    input_dir: str = field(default="inputs")
 
     # PyTorch optimization
     compile_mode: str = field(default="default")  # or max-autotune-no-cudagraphs
@@ -74,6 +76,10 @@ class TrainingParameters:
     world_size: int = field(default=1)
     dist_backend: str = field(default="nccl")
     dist_url: str = field(default="env://")
+
+    # wandb
+    use_wandb: bool = field(default=False)
+    wandb_project: str = field(default="provlae")
 
 
 def parse_arguments():
@@ -201,6 +207,29 @@ def save_reconstruction(inputs, reconstructions, save_path):
     imageio.imwrite(save_path, (image * 255).astype("uint8"))
 
 
+def save_input_image(inputs: torch.Tensor, save_dir: str, seq: int, size: int = 96) -> str:
+    input_path = os.path.join(save_dir, f"traverse_input_seq{seq}.png")
+    os.makedirs(save_dir, exist_ok=True)
+    
+    input_img = inputs[0].cpu().float()
+    input_img = torch.clamp(input_img, 0, 1)
+    
+    if input_img.shape[-1] != size:
+        input_img = F.interpolate(
+            input_img.unsqueeze(0),
+            size=size,
+            mode="bilinear",
+            align_corners=False,
+        ).squeeze(0)
+    
+    if input_img.shape[0] == 1:
+        input_img = input_img.repeat(3, 1, 1)
+    
+    input_array = (input_img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+    imageio.imwrite(input_path, input_array)
+    return input_path
+
+
 def create_latent_traversal(model, data_loader, save_path, device, params):
     """Create and save organized latent traversal GIF with optimized layout"""
     model.eval()
@@ -212,6 +241,15 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
     with torch.no_grad():
         inputs, _ = next(iter(data_loader))  # Get a single batch of images
         inputs = inputs[0:1].to(device)
+
+        input_path = save_input_image(
+            inputs.cpu(), 
+            os.path.join(
+                params.output_dir, 
+                params.input_dir
+            ),
+            params.train_seq
+        )
 
         # Get latent representations
         with torch.amp.autocast(device_type="cuda", enabled=False):
@@ -315,7 +353,9 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
         # duration=200 means 5 FPS, loop=0 means infinite loop
         imageio.imwrite(save_path, frames, duration=200, loop=0, format="GIF", optimize=False)
 
+        return input_path
 
+        
 @exec_time
 def train_model(model, data_loader, optimizer, params, device, logger, scaler=None, autocast_dtype=torch.float16):
     if torch.cuda.is_available():
@@ -362,6 +402,30 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                         latent_loss=f"{latent_loss:.2f}",
                         recon_loss=f"{recon_loss:.2f}",
                     )
+
+                if params.use_wandb and params.distributed:
+                    metrics = {
+                        f"loss/rank_{params.local_rank}": loss.item(),
+                        f"latent_loss/rank_{params.local_rank}": latent_loss.item(),
+                        f"recon_loss/rank_{params.local_rank}": recon_loss.item()
+                    }
+                    
+                    all_metrics = [None] * params.world_size
+                    dist.all_gather_object(all_metrics, metrics)
+                    
+                    if params.local_rank == 0:
+                        combined_metrics = {}
+                        for rank_metrics in all_metrics:
+                            combined_metrics.update(rank_metrics)
+                        wandb.log(combined_metrics, step=global_step)
+                elif params.use_wandb:
+                    metrics = {
+                        "loss": loss.item(),
+                        "latent_loss": latent_loss.item(),
+                        "recon_loss": recon_loss.item()
+                    }
+                    wandb.log(metrics, step=global_step)
+
                 global_step += 1
 
         # Save checkpoints and visualizations only on main process
@@ -377,7 +441,15 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 )
 
                 save_reconstruction(inputs, x_recon, recon_path)
-                create_latent_traversal(model, data_loader, traverse_path, device, params)
+                input_path = create_latent_traversal(model, data_loader, traverse_path, device, params)
+
+            # reconstruction and traversal images
+            if params.use_wandb and (params.local_rank == 0 or not params.distributed):
+                wandb.log({
+                    "Reconstruction": wandb.Image(recon_path),
+                    "Traversal": wandb.Image(traverse_path),
+                    "Input": wandb.Image(input_path)
+                }, step=global_step)
 
             model.train()
 
@@ -444,6 +516,42 @@ def get_optimizer(model, params):
     optimizer = optimizer_cls(**optimizer_params, **extra_args)
 
     return optimizer
+
+
+def init_wandb(params, hash):
+    if params.use_wandb:
+        if wandb.run is not None:
+            wandb.finish()
+        
+        run_id = None
+        if params.local_rank == 0:
+            logger.debug(f"Current run ID: {hash}")
+            wandb.init(
+                project=params.wandb_project,
+                config=vars(params),
+                name=f"{params.dataset.upper()}_PROGRESS{params.train_seq}_{hash}",
+                settings=wandb.Settings(
+                    start_method="thread",
+                    _disable_stats=True
+                )
+            )
+            run_id = wandb.run.id
+            
+        if params.distributed:
+            object_list = [run_id if params.local_rank == 0 else None]
+            dist.broadcast_object_list(object_list, src=0)
+            run_id = object_list[0]
+            
+        if params.local_rank != 0:
+            wandb.init(
+                project=params.wandb_project,
+                id=run_id,
+                resume="allow",
+                settings=wandb.Settings(
+                    start_method="thread",
+                    _disable_stats=True
+                )
+            )
 
 
 def main():
@@ -537,6 +645,10 @@ def main():
                     params.train_seq = i
                     model.train_seq = i
 
+                if params.use_wandb:
+                    hash_str = os.urandom(8).hex().upper()
+                    init_wandb(params, hash_str)
+
                 # Load checkpoint if needed
                 if params.train_seq >= 2:
                     prev_checkpoint = os.path.join(
@@ -567,7 +679,9 @@ def main():
                     scaler=scaler,
                     autocast_dtype=autocast_dtype,
                 )
-
+                
+                if params.use_wandb:
+                    wandb.finish()
                 if is_distributed:
                     torch.cuda.synchronize()
                     dist.barrier()
