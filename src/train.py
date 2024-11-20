@@ -3,7 +3,6 @@ import os
 import sys
 from dataclasses import dataclass, field
 
-import wandb
 import imageio.v3 as imageio
 import numpy as np
 import torch
@@ -12,6 +11,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import torch_optimizer as jettify_optim
 import torchvision
+import wandb
 from loguru import logger
 from PIL import Image, ImageDraw, ImageFont
 from torch.nn.parallel import DistributedDataParallel as DDP
@@ -210,10 +210,10 @@ def save_reconstruction(inputs, reconstructions, save_path):
 def save_input_image(inputs: torch.Tensor, save_dir: str, seq: int, size: int = 96) -> str:
     input_path = os.path.join(save_dir, f"traverse_input_seq{seq}.png")
     os.makedirs(save_dir, exist_ok=True)
-    
+
     input_img = inputs[0].cpu().float()
     input_img = torch.clamp(input_img, 0, 1)
-    
+
     if input_img.shape[-1] != size:
         input_img = F.interpolate(
             input_img.unsqueeze(0),
@@ -221,10 +221,10 @@ def save_input_image(inputs: torch.Tensor, save_dir: str, seq: int, size: int = 
             mode="bilinear",
             align_corners=False,
         ).squeeze(0)
-    
+
     if input_img.shape[0] == 1:
         input_img = input_img.repeat(3, 1, 1)
-    
+
     input_array = (input_img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
     imageio.imwrite(input_path, input_array)
     return input_path
@@ -242,14 +242,7 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
         inputs, _ = next(iter(data_loader))  # Get a single batch of images
         inputs = inputs[0:1].to(device)
 
-        input_path = save_input_image(
-            inputs.cpu(), 
-            os.path.join(
-                params.output_dir, 
-                params.input_dir
-            ),
-            params.train_seq
-        )
+        input_path = save_input_image(inputs.cpu(), os.path.join(params.output_dir, params.input_dir), params.train_seq)
 
         # Get latent representations
         with torch.amp.autocast(device_type="cuda", enabled=False):
@@ -355,7 +348,7 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
 
         return input_path
 
-        
+
 @exec_time
 def train_model(model, data_loader, optimizer, params, device, logger, scaler=None, autocast_dtype=torch.float16):
     if torch.cuda.is_available():
@@ -407,23 +400,19 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                     metrics = {
                         f"loss/rank_{params.local_rank}": loss.item(),
                         f"latent_loss/rank_{params.local_rank}": latent_loss.item(),
-                        f"recon_loss/rank_{params.local_rank}": recon_loss.item()
+                        f"recon_loss/rank_{params.local_rank}": recon_loss.item(),
                     }
-                    
+
                     all_metrics = [None] * params.world_size
                     dist.all_gather_object(all_metrics, metrics)
-                    
+
                     if params.local_rank == 0:
                         combined_metrics = {}
                         for rank_metrics in all_metrics:
                             combined_metrics.update(rank_metrics)
                         wandb.log(combined_metrics, step=global_step)
                 elif params.use_wandb:
-                    metrics = {
-                        "loss": loss.item(),
-                        "latent_loss": latent_loss.item(),
-                        "recon_loss": recon_loss.item()
-                    }
+                    metrics = {"loss": loss.item(), "latent_loss": latent_loss.item(), "recon_loss": recon_loss.item()}
                     wandb.log(metrics, step=global_step)
 
                 global_step += 1
@@ -445,11 +434,14 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
 
             # reconstruction and traversal images
             if params.use_wandb and (params.local_rank == 0 or not params.distributed):
-                wandb.log({
-                    "Reconstruction": wandb.Image(recon_path),
-                    "Traversal": wandb.Image(traverse_path),
-                    "Input": wandb.Image(input_path)
-                }, step=global_step)
+                wandb.log(
+                    {
+                        "Reconstruction": wandb.Image(recon_path),
+                        "Traversal": wandb.Image(traverse_path),
+                        "Input": wandb.Image(input_path),
+                    },
+                    step=global_step,
+                )
 
             model.train()
 
@@ -522,7 +514,7 @@ def init_wandb(params, hash):
     if params.use_wandb:
         if wandb.run is not None:
             wandb.finish()
-        
+
         run_id = None
         if params.local_rank == 0:
             logger.debug(f"Current run ID: {hash}")
@@ -530,27 +522,21 @@ def init_wandb(params, hash):
                 project=params.wandb_project,
                 config=vars(params),
                 name=f"{params.dataset.upper()}_PROGRESS{params.train_seq}_{hash}",
-                settings=wandb.Settings(
-                    start_method="thread",
-                    _disable_stats=True
-                )
+                settings=wandb.Settings(start_method="thread", _disable_stats=True),
             )
             run_id = wandb.run.id
-            
+
         if params.distributed:
             object_list = [run_id if params.local_rank == 0 else None]
             dist.broadcast_object_list(object_list, src=0)
             run_id = object_list[0]
-            
+
         if params.local_rank != 0:
             wandb.init(
                 project=params.wandb_project,
                 id=run_id,
                 resume="allow",
-                settings=wandb.Settings(
-                    start_method="thread",
-                    _disable_stats=True
-                )
+                settings=wandb.Settings(start_method="thread", _disable_stats=True),
             )
 
 
@@ -679,7 +665,7 @@ def main():
                     scaler=scaler,
                     autocast_dtype=autocast_dtype,
                 )
-                
+
                 if params.use_wandb:
                     wandb.finish()
                 if is_distributed:
