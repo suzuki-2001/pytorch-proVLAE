@@ -98,7 +98,7 @@ torchrun --nproc_per_node=2 --master_port=29501 src/train.py \
 | `kl_annealing_mode` | "linear" | KL cycle annealing mode (linear, sigmoid, cosine) |
 | `cycle_period` | 4 | The number of annealing |
 | `max_kl_weight` | 1.0 | Max KL weight |
-| `max_kl_weight` | 0.1 | Min KL weight |
+| `min_kl_weight` | 0.1 | Min KL weight |
 
 </br>
 
