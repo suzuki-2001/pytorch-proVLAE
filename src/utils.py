@@ -1,18 +1,18 @@
 import argparse
-import time
 import os
+import time
 from typing import Any
 
-import wandb
+import imageio
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import torchvision
-import imageio
-from loguru import logger
 import torch.optim as optim
 import torch_optimizer as jettify_optim
+import torchvision
+import wandb
+from loguru import logger
 
 from ddp_utils import setup_logger
 

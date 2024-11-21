@@ -1,7 +1,7 @@
-from math import ceil, log2
-import numpy as np
 import math
+from math import ceil, log2
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F

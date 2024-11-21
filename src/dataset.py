@@ -12,8 +12,8 @@ from loguru import logger
 from PIL import Image
 from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
 from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
 from torch.utils.data.distributed import DistributedSampler
+from tqdm import tqdm
 
 
 @dataclass
