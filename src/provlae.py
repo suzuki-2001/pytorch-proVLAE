@@ -1,4 +1,6 @@
 from math import ceil, log2
+import numpy as np
+import math
 
 import torch
 import torch.nn as nn
@@ -21,6 +23,16 @@ class ProVLAE(nn.Module):
         pre_kl=True,
         coff=0.5,
         train_seq=1,
+        use_kl_annealing=False,
+        kl_annealing_mode="linear",
+        cycle_period=4,
+        max_kl_weight=1,
+        min_kl_weight=0.1,
+        ratio=1.0,
+        use_capacity_increase=False,
+        gamma=1000.0,
+        max_capacity=25,
+        capacity_max_iter=1e-5,
     ):
         super(ProVLAE, self).__init__()
 
@@ -44,6 +56,22 @@ class ProVLAE(nn.Module):
         self.fade_in_duration = fade_in_duration
         self.train_seq = min(train_seq, self.num_ladders)
 
+        # for kl annealing
+        self.use_kl_annealing = use_kl_annealing
+        self.kl_annealing_mode = kl_annealing_mode
+        self.current_epoch = None
+        self.num_epochs = None
+        self.cycle_period = cycle_period
+        self.max_kl_weight = max_kl_weight
+        self.min_kl_weight = min_kl_weight
+        self.ratio = ratio
+
+        # Improving disentangling in β-VAE with controlled capacity increase
+        self.use_capacity_increase = use_capacity_increase
+        self.gamma = gamma
+        self.C_max = torch.Tensor([max_capacity])
+        self.C_stop_iter = capacity_max_iter
+
         # Calculate encoder sizes
         self.encoder_sizes = [self.target_size]
         current_size = self.target_size
@@ -56,8 +84,7 @@ class ProVLAE(nn.Module):
             self.hidden_dims.extend([self.hidden_dims[-1]] * (self.num_ladders - len(self.hidden_dims)))
         self.hidden_dims = self.hidden_dims[: self.num_ladders]
 
-        # Base setup
-        self.activation = nn.ELU()  # or LeakyReLU
+        self.activation = nn.LeakyReLU()  # or ELU
         self.q_dist = Normal
         self.x_dist = Bernoulli
         self.prior_params = nn.Parameter(torch.zeros(self.z_dim, 2))
@@ -170,16 +197,70 @@ class ProVLAE(nn.Module):
         return z_mean + eps * std, z_mean, z_log_var
 
     def _kl_divergence(self, z_mean, z_log_var):
-        return -0.5 * torch.sum(1 + z_log_var - z_mean.pow(2) - z_log_var.exp())
+        return -0.5 * torch.mean(1 + z_log_var - z_mean.pow(2) - z_log_var.exp())
 
     def fade_in_alpha(self, step):
         if step > self.fade_in_duration:
             return 1.0
         return step / self.fade_in_duration
 
+    def frange_cycle_linear(self, start, stop, n_epoch, n_cycle=4, ratio=0.5):
+        L = np.ones(n_epoch)
+        period = n_epoch / n_cycle
+        step = (stop - start) / (period / ratio)
+
+        for c in range(n_cycle):
+            v, i = start, 0
+            while v <= stop and int(i + c * period) < n_epoch:
+                L[int(i + c * period)] = v
+                v += step
+                i += 1
+        return L
+
+    def frange_cycle_sigmoid(self, start, stop, n_epoch, n_cycle=4, ratio=0.5):
+        L = np.ones(n_epoch)
+        period = n_epoch / n_cycle
+        step = (stop - start) / (period * ratio)  # step is in [0,1]
+
+        # transform into [-6, 6] for plots: v*12.-6.
+
+        for c in range(n_cycle):
+
+            v, i = start, 0
+            while v <= stop:
+                L[int(i + c * period)] = 1.0 / (1.0 + np.exp(-(v * 12.0 - 6.0)))
+                v += step
+                i += 1
+        return L
+
+    def frange_cycle_cosine(self, start, stop, n_epoch, n_cycle=4, ratio=0.5):
+        L = np.ones(n_epoch)
+        period = n_epoch / n_cycle
+        step = (stop - start) / (period * ratio)  # step is in [0,1]
+
+        # transform into [0, pi] for plots:
+
+        for c in range(n_cycle):
+
+            v, i = start, 0
+            while v <= stop:
+                L[int(i + c * period)] = 0.5 - 0.5 * math.cos(v * math.pi)
+                v += step
+                i += 1
+        return L
+
+    def cycle_kl_weights(self, epoch, n_epoch, cycle_period=4, max_kl_weight=1.0, min_kl_weight=0.1, ratio=0.5):
+        if self.kl_annealing_mode == "linear":
+            kl_weights = self.frange_cycle_linear(min_kl_weight, max_kl_weight, n_epoch, cycle_period, ratio)
+        if self.kl_annealing_mode == "sigmoid":
+            kl_weights = self.frange_cycle_sigmoid(min_kl_weight, max_kl_weight, n_epoch, cycle_period, ratio)
+        if self.kl_annealing_mode == "cosine":
+            kl_weights = self.frange_cycle_cosine(min_kl_weight, max_kl_weight, n_epoch, cycle_period, ratio)
+
+        return kl_weights[epoch]
+
     def encode(self, x):
-        # Store original size
-        original_size = x.size()[-2:]
+        original_size = x.size()[-2:]  # Store original size
 
         # Resize to target size
         if original_size != (self.target_size, self.target_size):
@@ -222,10 +303,8 @@ class ProVLAE(nn.Module):
                 f = f * self.fade_in
             features.append(f)
 
-        # Start from deepest layer
-        x = features[-1]
-
         # Progressive decoding with explicit size management
+        x = features[-1]  # Start from deepest layer
         for i in range(self.num_ladders - 2, -1, -1):
             # Ensure feature maps have matching spatial dimensions
             target_size = features[i].size(-1)
@@ -241,8 +320,7 @@ class ProVLAE(nn.Module):
         for up_layer in self.additional_ups:
             x = up_layer(x)
 
-        # Final convolution
-        x = self.output_layer(x)
+        x = self.output_layer(x)  # Final convolution
 
         # Resize to original input size
         if original_size != (x.size(-2), x.size(-1)):
@@ -252,11 +330,17 @@ class ProVLAE(nn.Module):
 
     def forward(self, x, step=0):
         self.fade_in = self.fade_in_alpha(step)
+        kl_weight = self.cycle_kl_weights(
+            epoch=self.current_epoch,
+            n_epoch=self.num_epochs,
+            cycle_period=self.cycle_period,
+            max_kl_weight=self.max_kl_weight,
+            min_kl_weight=self.min_kl_weight,
+            ratio=self.ratio,
+        )
 
-        # Encode
         z_params, original_size = self.encode(x)
 
-        # Calculate KL divergence
         latent_losses = []
         zs = []
         for z, z_mean, z_log_var in z_params:
@@ -264,23 +348,32 @@ class ProVLAE(nn.Module):
             zs.append(z)
 
         latent_loss = sum(latent_losses)
-
-        # Decode
         x_recon = self.decode(zs, original_size)
 
         # Reconstruction loss
-        bce_loss = nn.BCEWithLogitsLoss(reduction="sum")
+        bce_loss = nn.BCEWithLogitsLoss(reduction="mean")
         recon_loss = bce_loss(x_recon, x)
 
-        # Calculate final loss
-        if self.pre_kl:
-            active_latents = latent_losses[self.train_seq - 1 :]
-            inactive_latents = latent_losses[: self.train_seq - 1]
-            loss = recon_loss + self.beta * sum(active_latents) + self.coff * sum(inactive_latents)
+        # prekl loss
+        active_latents = latent_losses[self.train_seq - 1 :]
+        inactive_latents = latent_losses[: self.train_seq - 1]
+        if self.use_kl_annealing:
+            if self.use_capacity_increase:
+                # https://arxiv.org/pdf/1804.03599.pdf
+                self.C_max = self.C_max.to(x.device)
+                C = torch.clamp(self.C_max / self.C_stop_iter * step, 0, self.C_max.data[0])
+                kl_term = self.gamma * kl_weight * (sum(active_latents) - C).abs()
+            else:
+                # https://openreview.net/forum?id=Sy2fzU9gl
+                kl_term = kl_weight * self.beta * sum(active_latents)
         else:
-            loss = recon_loss + self.beta * latent_loss
+            kl_term = self.beta * sum(active_latents)
 
-        return torch.sigmoid(x_recon), loss, latent_loss, recon_loss
+        loss = recon_loss + kl_term
+        if self.pre_kl:
+            loss += self.coff * sum(inactive_latents)
+
+        return torch.sigmoid(x_recon), loss, kl_term, recon_loss, kl_weight
 
     def inference(self, x):
         with torch.no_grad():

@@ -1,27 +1,31 @@
 import argparse
 import os
-import sys
 from dataclasses import dataclass, field
 
+import math
 import imageio.v3 as imageio
 import numpy as np
 import torch
 import torch.distributed as dist
 import torch.nn.functional as F
-import torch.optim as optim
-import torch_optimizer as jettify_optim
 import torchvision
 import wandb
-from loguru import logger
 from PIL import Image, ImageDraw, ImageFont
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
-from dataset import DTD, MNIST, MPI3D, CelebA, DSprites, FashionMNIST, Flowers102, Ident3D, ImageNet, Shapes3D
-from ddp_utils import cleanup_distributed, setup_distributed, setup_logger
 from provlae import ProVLAE
-from utils import add_dataclass_args, exec_time
+from dataset import get_dataset
+from ddp_utils import cleanup_distributed, setup_distributed, setup_logger
+from utils import (
+    init_wandb,
+    get_optimizer,
+    add_dataclass_args,
+    exec_time,
+    save_input_image,
+    save_reconstruction,
+    load_checkpoint,
+)
 
 
 @dataclass
@@ -50,6 +54,16 @@ class HyperParameters:
     hidden_dim: int = field(default=32)
     coff: float = field(default=0.5)
     pre_kl: bool = field(default=True)
+    use_kl_annealing: bool = field(default=False)
+    kl_annealing_mode: str = field(default="linear")
+    cycle_period: int = field(default=4)
+    max_kl_weight: float = field(default=1.0)
+    min_kl_weight: float = field(default=0.1)
+    ratio: float = field(default=1.0)
+    use_capacity_increase: bool = field(default=False)
+    gamma: float = field(default=1000.0)
+    max_capacity: int = field(default=25)
+    capacity_max_iter: float = field(default=1e-5)
 
 
 @dataclass
@@ -91,145 +105,6 @@ def parse_arguments():
     return parser.parse_args()
 
 
-def get_dataset(params, logger):
-    """Load dataset with distributed support"""
-    dataset_classes = {
-        "mnist": MNIST,
-        "fashionmnist": FashionMNIST,
-        "shapes3d": Shapes3D,
-        "dsprites": DSprites,
-        "celeba": CelebA,
-        "flowers102": Flowers102,
-        "dtd": DTD,
-        "imagenet": ImageNet,
-        "mpi3d": MPI3D,
-        "ident3d": Ident3D,
-    }
-
-    if params.dataset not in dataset_classes:
-        raise ValueError(f"Unknown dataset: {params.dataset}")
-
-    dataset_class = dataset_classes[params.dataset]
-
-    try:
-        if params.dataset == "mpi3d":
-            variant = getattr(params, "mpi3d_variant", "toy")
-            dataset = dataset_class(root=params.data_path, batch_size=params.batch_size, num_workers=4, variant=variant)
-        else:
-            dataset = dataset_class(root=params.data_path, batch_size=params.batch_size, num_workers=4)
-
-        config = dataset.get_config()
-        params.chn_num = config.chn_num
-        params.image_size = config.image_size
-
-        train_loader, test_loader = dataset.get_data_loader()
-        if params.distributed:
-            train_sampler = DistributedSampler(
-                train_loader.dataset,
-                num_replicas=params.world_size,
-                rank=params.local_rank,
-                shuffle=True,
-                drop_last=True,
-            )
-
-            train_loader = torch.utils.data.DataLoader(
-                train_loader.dataset,
-                batch_size=params.batch_size,
-                sampler=train_sampler,
-                num_workers=params.num_workers,
-                pin_memory=True,
-                drop_last=True,
-                persistent_workers=True,
-            )
-
-            if params.local_rank == 0:
-                logger.info(f"Dataset {params.dataset} loaded with distributed sampler")
-        else:
-            logger.info(f"Dataset {params.dataset} loaded")
-
-        return train_loader, test_loader
-
-    except Exception as e:
-        logger.error(f"Failed to load dataset: {str(e)}")
-        raise
-
-
-def load_checkpoint(model, optimizer, scaler, checkpoint_path, device, logger):
-    """Load a model checkpoint with proper device management."""
-    try:
-        checkpoint = torch.load(
-            checkpoint_path,
-            map_location=device,
-            weights_only=True,
-        )
-
-        # Load model state dict
-        if hasattr(model, "module"):
-            model.module.load_state_dict(checkpoint["model_state_dict"])
-        else:
-            model.load_state_dict(checkpoint["model_state_dict"], strict=False)
-
-        # Load optimizer state dict
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-
-        if scaler is not None and "scaler_state_dict" in checkpoint:
-            scaler.load_state_dict(checkpoint["scaler_state_dict"])
-
-        logger.info(
-            f"Loaded checkpoint from '{checkpoint_path}' (Epoch: {checkpoint['epoch']}, Loss: {checkpoint['loss']:.4f})"
-        )
-
-        return model, optimizer, scaler
-    except Exception as e:
-        logger.error(f"Failed to load checkpoint: {str(e)}")
-        return model, optimizer, scaler
-
-
-def save_reconstruction(inputs, reconstructions, save_path):
-    """Save a grid of original and reconstructed images"""
-    batch_size = min(8, inputs.shape[0])
-    inputs = inputs[:batch_size].float()
-    reconstructions = reconstructions[:batch_size].float()
-    comparison = torch.cat([inputs[:batch_size], reconstructions[:batch_size]])
-
-    # Denormalize and convert to numpy
-    images = comparison.cpu().detach()
-    images = torch.clamp(images, 0, 1)
-    grid = torchvision.utils.make_grid(images, nrow=batch_size)
-    image = grid.permute(1, 2, 0).numpy()
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    imageio.imwrite(save_path, (image * 255).astype("uint8"))
-
-
-def save_input_image(inputs: torch.Tensor, save_dir: str, seq: int, size: int = 96) -> str:
-    input_path = os.path.join(save_dir, f"traverse_input_seq{seq}.png")
-    os.makedirs(save_dir, exist_ok=True)
-
-    input_img = inputs[0].cpu().float()
-    input_img = torch.clamp(input_img, 0, 1)
-
-    if input_img.shape[-1] != size:
-        input_img = F.interpolate(
-            input_img.unsqueeze(0),
-            size=size,
-            mode="bilinear",
-            align_corners=False,
-        ).squeeze(0)
-
-    if input_img.shape[0] == 1:
-        input_img = input_img.repeat(3, 1, 1)
-
-    input_array = (input_img.permute(1, 2, 0).numpy() * 255).astype(np.uint8)
-    imageio.imwrite(input_path, input_array)
-    return input_path
-
-
 def create_latent_traversal(model, data_loader, save_path, device, params):
     """Create and save organized latent traversal GIF with optimized layout"""
     model.eval()
@@ -242,13 +117,16 @@ def create_latent_traversal(model, data_loader, save_path, device, params):
         inputs, _ = next(iter(data_loader))  # Get a single batch of images
         inputs = inputs[0:1].to(device)
 
-        input_path = save_input_image(inputs.cpu(), os.path.join(params.output_dir, params.input_dir), params.train_seq)
+        # save traverse inputs
+        input_path = save_input_image(
+            inputs.cpu(), os.path.join(params.output_dir, params.input_dir), params.train_seq, params.image_size
+        )
 
         # Get latent representations
         with torch.amp.autocast(device_type="cuda", enabled=False):
             latent_vars = [z[0] for z in model.inference(inputs)]
 
-        traverse_range = torch.linspace(-1.5, 1.5, 15).to(device)
+        traverse_range = torch.linspace(-2.5, 2.5, 10).to(device)
 
         # Image layout parameters
         img_size = 96  # Base image size
@@ -356,6 +234,7 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
 
     if hasattr(model, "module"):
         model.module.to(device)
+        model.module.num_epochs = params.num_epochs
     else:
         model.to(device)
 
@@ -364,6 +243,11 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
 
     logger.info(f"Start training [progress {params.train_seq}]")
     for epoch in range(params.num_epochs):
+        if hasattr(model, "module"):
+            model.module.current_epoch = epoch
+        else:
+            model.current_epoch = epoch
+
         if params.distributed:
             data_loader.sampler.set_epoch(epoch)
 
@@ -378,7 +262,7 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 inputs = inputs.to(device, non_blocking=True)
 
                 with torch.amp.autocast(device_type="cuda", dtype=autocast_dtype):
-                    x_recon, loss, latent_loss, recon_loss = model(inputs, step=global_step)
+                    x_recon, loss, latent_loss, recon_loss, kl_weight = model(inputs, step=global_step)
 
                 optimizer.zero_grad()
                 if scaler is not None:
@@ -391,16 +275,17 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
 
                 if params.local_rank == 0 or not params.distributed:  # Only show progress on main process
                     pbar.set_postfix(
-                        total_loss=f"{loss.item():.2f}",
-                        latent_loss=f"{latent_loss:.2f}",
-                        recon_loss=f"{recon_loss:.2f}",
+                        total_loss=f"{loss.item():.5f}",
+                        latent_loss=f"{latent_loss.item():.5f}",
+                        recon_loss=f"{recon_loss.item():.5f}",
                     )
 
                 if params.use_wandb and params.distributed:
                     metrics = {
-                        f"loss/rank_{params.local_rank}": loss.item(),
-                        f"latent_loss/rank_{params.local_rank}": latent_loss.item(),
-                        f"recon_loss/rank_{params.local_rank}": recon_loss.item(),
+                        f"ELBO/rank_{params.local_rank}": loss.item(),
+                        f"KL Term/rank_{params.local_rank}": latent_loss.item(),
+                        f"Reconstruction Error/rank_{params.local_rank}": recon_loss.item(),
+                        f"KL Weight/rank_{params.local_rank}": kl_weight.item(),
                     }
 
                     all_metrics = [None] * params.world_size
@@ -412,7 +297,12 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                             combined_metrics.update(rank_metrics)
                         wandb.log(combined_metrics, step=global_step)
                 elif params.use_wandb:
-                    metrics = {"loss": loss.item(), "latent_loss": latent_loss.item(), "recon_loss": recon_loss.item()}
+                    metrics = {
+                        "ELBO": loss.item(),
+                        "KL Term": latent_loss.item(),
+                        "Reconstruction Error": recon_loss.item(),
+                        "KL Weight": kl_weight.item(),
+                    }
                     wandb.log(metrics, step=global_step)
 
                 global_step += 1
@@ -432,7 +322,7 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 save_reconstruction(inputs, x_recon, recon_path)
                 input_path = create_latent_traversal(model, data_loader, traverse_path, device, params)
 
-            # reconstruction and traversal images
+            # reconstruction and traversal images (Media)
             if params.use_wandb and (params.local_rank == 0 or not params.distributed):
                 wandb.log(
                     {
@@ -458,100 +348,17 @@ def train_model(model, data_loader, optimizer, params, device, logger, scaler=No
                 logger.info(f"Epoch: [{epoch+1}/{params.num_epochs}], Loss: {loss.item():.2f}")
 
 
-def get_optimizer(model, params):
-    """Get the optimizer based on the parameter settings"""
-    optimizer_params = {
-        "params": model.parameters(),
-        "lr": params.learning_rate,
-    }
-
-    # Adam, Lamb, DiffGrad
-    extra_args_common = {
-        "betas": getattr(params, "betas", (0.9, 0.999)),
-        "eps": getattr(params, "eps", 1e-8),
-        "weight_decay": getattr(params, "weight_decay", 0),
-    }
-
-    extra_args_adamw = {
-        "betas": getattr(params, "betas", (0.9, 0.999)),
-        "eps": getattr(params, "eps", 1e-8),
-        "weight_decay": getattr(params, "weight_decay", 0.01),
-    }
-
-    # SGD
-    extra_args_sgd = {
-        "momentum": getattr(params, "momentum", 0),
-        "dampening": getattr(params, "dampening", 0),
-        "weight_decay": getattr(params, "weight_decay", 0),
-        "nesterov": getattr(params, "nesterov", False),
-    }
-
-    # MADGRAD
-    extra_args_madgrad = {
-        "momentum": getattr(params, "momentum", 0.9),
-        "weight_decay": getattr(params, "weight_decay", 0),
-        "eps": getattr(params, "eps", 1e-6),
-    }
-
-    optimizers = {
-        "adam": (optim.Adam, extra_args_common),
-        "adamw": (optim.AdamW, extra_args_adamw),
-        "sgd": (optim.SGD, extra_args_sgd),
-        "lamb": (jettify_optim.Lamb, extra_args_common),
-        "diffgrad": (jettify_optim.DiffGrad, extra_args_common),
-        "madgrad": (jettify_optim.MADGRAD, extra_args_madgrad),
-    }
-
-    optimizer_cls, extra_args = optimizers.get(params.optim.lower(), (optim.Adam, extra_args_common))
-    if params.optim.lower() not in optimizers:
-        logger.warning(f"Unsupported optimizer '{params.optim}', using 'Adam' optimizer instead.")
-    optimizer = optimizer_cls(**optimizer_params, **extra_args)
-
-    return optimizer
-
-
-def init_wandb(params, hash):
-    if params.use_wandb:
-        if wandb.run is not None:
-            wandb.finish()
-
-        run_id = None
-        if params.local_rank == 0:
-            logger.debug(f"Current run ID: {hash}")
-            wandb.init(
-                project=params.wandb_project,
-                config=vars(params),
-                name=f"{params.dataset.upper()}_PROGRESS{params.train_seq}_{hash}",
-                settings=wandb.Settings(start_method="thread", _disable_stats=True),
-            )
-            run_id = wandb.run.id
-
-        if params.distributed:
-            object_list = [run_id if params.local_rank == 0 else None]
-            dist.broadcast_object_list(object_list, src=0)
-            run_id = object_list[0]
-
-        if params.local_rank != 0:
-            wandb.init(
-                project=params.wandb_project,
-                id=run_id,
-                resume="allow",
-                settings=wandb.Settings(start_method="thread", _disable_stats=True),
-            )
-
-
 def main():
-    params = parse_arguments()
+    params = parse_arguments()  # hyperparameter and training config
+
+    """TODO: fix random seed"""
 
     try:
-        # Setup distributed training
-        is_distributed = setup_distributed(params)
+        is_distributed = setup_distributed(params)  # Setup distributed training
         rank = params.local_rank if is_distributed else 0
         world_size = params.world_size if is_distributed else 1
-
-        # Setup device and logger
         device = torch.device(f"cuda:{params.local_rank}" if is_distributed else "cuda")
-        logger = setup_logger(rank, world_size)
+        logger = setup_logger(rank, world_size)  # ddp logger
 
         torch.set_float32_matmul_precision("high")
         if params.on_cudnn_benchmark:
@@ -593,6 +400,16 @@ def main():
             hidden_dim=params.hidden_dim,
             coff=params.coff,
             pre_kl=params.pre_kl,
+            use_kl_annealing=params.use_kl_annealing,
+            kl_annealing_mode=params.kl_annealing_mode,
+            cycle_period=params.cycle_period,
+            max_kl_weight=params.max_kl_weight,
+            min_kl_weight=params.min_kl_weight,
+            ratio=params.ratio,
+            use_capacity_increase=params.use_capacity_increase,
+            gamma=params.gamma,
+            max_capacity=params.max_capacity,
+            capacity_max_iter=params.capacity_max_iter,
         ).to(device)
 
         if is_distributed:
@@ -614,9 +431,7 @@ def main():
         # Training mode selection
         if params.mode == "seq_train":
             if rank == 0:
-                logger.opt(colors=True).info(
-                    f"<blue>✅ Mode: sequential execution [progress 1 >> {params.num_ladders}]</blue>"
-                )
+                logger.opt(colors=True).info(f"✅ Mode: sequential execution [progress 1 >> {params.num_ladders}]")
 
             for i in range(1, params.num_ladders + 1):
                 if is_distributed:
@@ -624,11 +439,10 @@ def main():
                     dist.barrier()
 
                 # Update sequence number
+                params.train_seq = i
                 if is_distributed:
-                    params.train_seq = i
                     model.module.train_seq = i
                 else:
-                    params.train_seq = i
                     model.train_seq = i
 
                 if params.use_wandb:
@@ -675,13 +489,15 @@ def main():
         elif params.mode == "indep_train":
             logger.info(f"Current trainig progress >> {params.train_seq}")
             if rank == 0:
-                logger.opt(colors=True).info(
-                    f"<blue>✅ Mode: independent execution [progress {params.train_seq}]</blue>"
-                )
+                logger.opt(colors=True).info(f"✅ Mode: independent execution [progress {params.train_seq}]")
 
             if is_distributed:
                 torch.cuda.synchronize()
                 dist.barrier()
+
+            if params.use_wandb:
+                hash_str = os.urandom(8).hex().upper()
+                init_wandb(params, hash_str)
 
             # Load checkpoint if needed
             if params.train_seq >= 2:
@@ -719,7 +535,7 @@ def main():
                 dist.barrier()
 
         elif params.mode == "traverse":
-            logger.opt(colors=True).info(f"<blue>✅ Mode: traverse execution [progress 1 {params.num_ladders}]</blue>")
+            logger.opt(colors=True).info(f"✅ Mode: traverse execution [progress 1 {params.num_ladders}]")
             try:
                 model, optimizer, scaler = load_checkpoint(
                     model=model,

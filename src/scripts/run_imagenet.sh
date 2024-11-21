@@ -6,12 +6,12 @@ torchrun --nproc_per_node=2 --master_port=29501 src/train.py \
     --dataset imagenet \
     --optim adamw \
     --num_ladders 4 \
-    --batch_size  256 \
-    --num_epochs 100 \
+    --batch_size  128 \
+    --num_epochs 30 \
     --learning_rate 5e-4 \
     --beta 1 \
-    --z_dim 4 \
-    --coff 0.5 \
+    --z_dim 8 \
+    --coff 0.1 \
     --pre_kl \
     --hidden_dim 64 \
     --fade_in_duration 5000 \
