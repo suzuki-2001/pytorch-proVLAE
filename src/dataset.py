@@ -12,6 +12,7 @@ from loguru import logger
 from PIL import Image
 from requests.exceptions import ConnectionError, HTTPError, RequestException, Timeout
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm
 
 
@@ -44,6 +45,69 @@ class DatasetConfig:
             raise ValueError(f"Unknown dataset: {dataset_name}")
 
         return configs[dataset_name]
+
+
+def get_dataset(params, logger):
+    """Load dataset with distributed support"""
+    dataset_classes = {
+        "mnist": MNIST,
+        "fashionmnist": FashionMNIST,
+        "shapes3d": Shapes3D,
+        "dsprites": DSprites,
+        "celeba": CelebA,
+        "flowers102": Flowers102,
+        "dtd": DTD,
+        "imagenet": ImageNet,
+        "mpi3d": MPI3D,
+        "ident3d": Ident3D,
+    }
+
+    if params.dataset not in dataset_classes:
+        raise ValueError(f"Unknown dataset: {params.dataset}")
+
+    dataset_class = dataset_classes[params.dataset]
+
+    try:
+        if params.dataset == "mpi3d":
+            variant = getattr(params, "mpi3d_variant", "toy")
+            dataset = dataset_class(root=params.data_path, batch_size=params.batch_size, num_workers=4, variant=variant)
+        else:
+            dataset = dataset_class(root=params.data_path, batch_size=params.batch_size, num_workers=4)
+
+        config = dataset.get_config()
+        params.chn_num = config.chn_num
+        params.image_size = config.image_size
+
+        train_loader, test_loader = dataset.get_data_loader()
+        if params.distributed:
+            train_sampler = DistributedSampler(
+                train_loader.dataset,
+                num_replicas=params.world_size,
+                rank=params.local_rank,
+                shuffle=True,
+                drop_last=True,
+            )
+
+            train_loader = torch.utils.data.DataLoader(
+                train_loader.dataset,
+                batch_size=params.batch_size,
+                sampler=train_sampler,
+                num_workers=params.num_workers,
+                pin_memory=True,
+                drop_last=True,
+                persistent_workers=True,
+            )
+
+            if params.local_rank == 0:
+                logger.info(f"Dataset {params.dataset} loaded with distributed sampler")
+        else:
+            logger.info(f"Dataset {params.dataset} loaded")
+
+        return train_loader, test_loader
+
+    except Exception as e:
+        logger.error(f"Failed to load dataset: {str(e)}")
+        raise
 
 
 def download_file(url, filename):
