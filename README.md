@@ -1,7 +1,6 @@
 # pytorch-proVLAE
-![MIT LICENSE](https://img.shields.io/badge/LICENSE-MIT-blue)
-[![Format Code](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml)
-[![Validate Mamba Environment](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml)
+<img src="https://img.shields.io/badge/-Python-F9DC3E.svg?logo=python&style=flat"> [![Format Code](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/black-format.yaml)
+[![Validate Mamba Env](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml/badge.svg)](https://github.com/suzuki-2001/pytorch-proVLAE/actions/workflows/validate-mamba-env.yaml)
 
 </br>
 
@@ -12,7 +11,7 @@ The official code for proVLAE, implemented in TensorFlow, is available [here](ht
 
 <img src="./md/shapes3d.gif" width="100%">
 
-⬆︎ Visualization of results when traversing the latent space of pytorch-proVLAE trained on four datasets: 3D Shapes.
+☝️ **Visualization of results when traversing the latent space (-1.5 to +1.5) of pytorch-proVLAE trained on 3D Shapes.**
 
 &nbsp;
 
